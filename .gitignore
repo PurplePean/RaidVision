@@ -3,4 +3,10 @@ __pycache__/
 *.pyc
 frames/
 history.json
-.env
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.zip
+nvapi_test/
+control_tests/
