@@ -7,6 +7,8 @@ import cv2
 import mss
 import numpy as np
 
+from write_control_profile import write_control_profile_from_recommendation
+
 
 MSS_MONITOR_INDEX = 3
 
@@ -402,6 +404,8 @@ def main():
     visibility = visibility_score(weighted_metrics)
     recommendation = build_recommendation(weighted_metrics, confidence)
 
+    control_profile = write_control_profile_from_recommendation(recommendation)
+
     raid_profile = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "status": "success",
@@ -426,6 +430,7 @@ def main():
         "raw_valid_average_metrics": raw_valid_average,
         "metrics_volatility": volatility,
         "recommendation": recommendation,
+        "control_profile": control_profile,
     }
 
     print("\nScene Analysis")
@@ -449,6 +454,12 @@ def main():
     print("Gamma Adjustment:", recommendation["gamma_adjustment"])
     print("Brightness Adjustment:", recommendation["brightness_adjustment"])
     print("Contrast Adjustment:", recommendation["contrast_adjustment"])
+
+    print("\nControl Profile")
+    print("Display Index:", control_profile["display_index"])
+    print("Brightness:", control_profile["brightness"])
+    print("Contrast:", control_profile["contrast"])
+    print("Gamma:", control_profile["gamma"])
 
     print("\nReasoning:")
     for reason in recommendation["reasons"]:
