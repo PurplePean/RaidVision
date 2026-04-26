@@ -1,13 +1,31 @@
-.vs/
+# Python
 venv/
 __pycache__/
 *.pyc
+
+# Runtime output
 frames/
+logs/
 history.json
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+
+# C# / build output
+bin/
+obj/
 *.exe
-*.obj
+*.dll
 *.pdb
+*.obj
 *.ilk
-*.zip
+
+# Experiments / scratch
+Notes/
 nvapi_test/
 control_tests/
+
+# Archives
+*.zip

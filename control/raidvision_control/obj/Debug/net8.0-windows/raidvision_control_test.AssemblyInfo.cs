@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("raidvision_control_test")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2c0b17d60f373cd119028f3df9ecd58e6abf21bd")]
 [assembly: System.Reflection.AssemblyProductAttribute("raidvision_control_test")]
 [assembly: System.Reflection.AssemblyTitleAttribute("raidvision_control_test")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

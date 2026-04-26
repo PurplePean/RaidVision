@@ -13,11 +13,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\zachp\\raidvision_control_test\\raidvision_control_test.csproj",
+      "projectUniqueName": "C:\\Users\\zachp\\RaidVision\\control\\raidvision_control\\raidvision_control_test.csproj",
       "projectName": "raidvision_control_test",
-      "projectPath": "C:\\Users\\zachp\\raidvision_control_test\\raidvision_control_test.csproj",
+      "projectPath": "C:\\Users\\zachp\\RaidVision\\control\\raidvision_control\\raidvision_control_test.csproj",
       "packagesPath": "C:\\Users\\zachp\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\zachp\\raidvision_control_test\\obj\\",
+      "outputPath": "C:\\Users\\zachp\\RaidVision\\control\\raidvision_control\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\zachp\\AppData\\Roaming\\NuGet\\NuGet.Config"
