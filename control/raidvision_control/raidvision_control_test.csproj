@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>false</UseWPF>
+    <UseWindowsForms>false</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="WindowsDisplayAPI">
+  <HintPath>C:\Users\zachp\OneDrive\Desktop\NvidiaDisplayController\NvidiaDisplayController\WindowsDisplayAPI.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>
