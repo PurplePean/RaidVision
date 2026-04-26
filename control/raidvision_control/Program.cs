@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using WindowsDisplayAPI;
 
 class Program
@@ -11,6 +12,8 @@ class Program
     private const double NeutralBrightness = 0.5;
     private const double NeutralContrast = 0.5;
     private const double NeutralGamma = 1.0;
+
+    private static ControlProfile? _lastAppliedProfile = null;
 
     static int Main(string[] args)
     {
@@ -29,6 +32,7 @@ class Program
                 "list" => ListDisplays(),
                 "apply" => Apply(args),
                 "apply-profile" => ApplyProfile(args),
+                "watch" => Watch(args),
                 "reset" => Reset(args),
                 _ => UnknownCommand(command)
             };
@@ -68,7 +72,89 @@ class Program
     private static int ApplyProfile(string[] args)
     {
         string path = GetStringArg(args, "--path", "control_profile.json");
+        ControlProfile profile = ReadProfile(path);
 
+        return ApplyProfileValues(profile, forceApply: true);
+    }
+
+    private static int Watch(string[] args)
+    {
+        string path = GetStringArg(args, "--path", "control_profile.json");
+        string fullPath = Path.GetFullPath(path);
+        string? directory = Path.GetDirectoryName(fullPath);
+        string fileName = Path.GetFileName(fullPath);
+
+        if (directory == null)
+        {
+            throw new InvalidOperationException("Invalid profile path.");
+        }
+
+        Console.WriteLine("RaidVision Control Watcher");
+        Console.WriteLine($"Watching: {fullPath}");
+        Console.WriteLine("Press Ctrl+C to stop and reset display.");
+
+        bool keepRunning = true;
+
+        Console.CancelKeyPress += (sender, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            keepRunning = false;
+
+            Console.WriteLine();
+            Console.WriteLine("Stopping watcher...");
+        };
+
+        if (File.Exists(fullPath))
+        {
+            TryApplyProfile(fullPath, forceApply: true);
+        }
+        else
+        {
+            Console.WriteLine("Profile file does not exist yet. Waiting for updates...");
+        }
+
+        using FileSystemWatcher watcher = new FileSystemWatcher(directory, fileName);
+
+        watcher.NotifyFilter =
+            NotifyFilters.LastWrite |
+            NotifyFilters.FileName |
+            NotifyFilters.Size |
+            NotifyFilters.CreationTime;
+
+        watcher.Changed += (_, _) => TryApplyProfile(fullPath, forceApply: false);
+        watcher.Created += (_, _) => TryApplyProfile(fullPath, forceApply: false);
+        watcher.Renamed += (_, _) => TryApplyProfile(fullPath, forceApply: false);
+
+        watcher.EnableRaisingEvents = true;
+
+        while (keepRunning)
+        {
+            Thread.Sleep(250);
+        }
+
+        ResetAllKnownDisplays();
+
+        Console.WriteLine("Watcher stopped.");
+        return 0;
+    }
+
+    private static void TryApplyProfile(string path, bool forceApply)
+    {
+        try
+        {
+            Thread.Sleep(100);
+
+            ControlProfile profile = ReadProfile(path);
+            ApplyProfileValues(profile, forceApply);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Profile apply skipped: {ex.Message}");
+        }
+    }
+
+    private static ControlProfile ReadProfile(string path)
+    {
         if (!File.Exists(path))
         {
             throw new FileNotFoundException($"Profile file not found: {path}");
@@ -76,7 +162,7 @@ class Program
 
         string json = File.ReadAllText(path);
 
-        var options = new JsonSerializerOptions
+        JsonSerializerOptions options = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
         };
@@ -88,17 +174,52 @@ class Program
             throw new InvalidOperationException("Could not parse control profile.");
         }
 
+        return profile;
+    }
+
+    private static int ApplyProfileValues(ControlProfile profile, bool forceApply)
+    {
         if (profile.Reset)
         {
             return ResetDisplay(profile.DisplayIndex);
         }
 
-        return ApplyValues(
+        if (!forceApply && _lastAppliedProfile != null && !IsMeaningfulChange(profile, _lastAppliedProfile))
+        {
+            Console.WriteLine("Profile update ignored. Change below threshold.");
+            return 0;
+        }
+
+        int result = ApplyValues(
             profile.DisplayIndex,
             profile.Brightness,
             profile.Contrast,
             profile.Gamma
         );
+
+        _lastAppliedProfile = profile;
+        return result;
+    }
+
+    private static bool IsMeaningfulChange(ControlProfile current, ControlProfile previous)
+    {
+        if (current.DisplayIndex != previous.DisplayIndex)
+        {
+            return true;
+        }
+
+        if (current.Reset != previous.Reset)
+        {
+            return true;
+        }
+
+        double brightnessDelta = Math.Abs(current.Brightness - previous.Brightness);
+        double contrastDelta = Math.Abs(current.Contrast - previous.Contrast);
+        double gammaDelta = Math.Abs(current.Gamma - previous.Gamma);
+
+        return brightnessDelta >= 0.02 ||
+               contrastDelta >= 0.02 ||
+               gammaDelta >= 0.02;
     }
 
     private static int ApplyValues(int displayIndex, double brightness, double contrast, double gamma)
@@ -107,7 +228,7 @@ class Program
         contrast = Clamp(contrast, 0.0, 1.0);
         gamma = Clamp(gamma, 0.4, 2.8);
 
-        var target = GetDisplay(displayIndex);
+        Display target = GetDisplay(displayIndex);
 
         target.GammaRamp = new DisplayGammaRamp(brightness, contrast, gamma);
 
@@ -128,7 +249,7 @@ class Program
 
     private static int ResetDisplay(int displayIndex)
     {
-        var target = GetDisplay(displayIndex);
+        Display target = GetDisplay(displayIndex);
 
         target.GammaRamp = new DisplayGammaRamp(
             NeutralBrightness,
@@ -143,6 +264,29 @@ class Program
         Console.WriteLine($"Gamma: {NeutralGamma:F3}");
 
         return 0;
+    }
+
+    private static void ResetAllKnownDisplays()
+    {
+        try
+        {
+            var displays = Display.GetDisplays().ToList();
+
+            for (int i = 0; i < displays.Count; i++)
+            {
+                displays[i].GammaRamp = new DisplayGammaRamp(
+                    NeutralBrightness,
+                    NeutralContrast,
+                    NeutralGamma
+                );
+
+                Console.WriteLine($"Reset display {i}: {displays[i].DisplayName}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Reset all failed: {ex.Message}");
+        }
     }
 
     private static Display GetDisplay(int displayIndex)
@@ -216,6 +360,7 @@ class Program
         Console.WriteLine("  list");
         Console.WriteLine("  apply --display 1 --brightness 0.60 --contrast 0.55 --gamma 1.35");
         Console.WriteLine("  apply-profile --path ..\\..\\control_profile.json");
+        Console.WriteLine("  watch --path ..\\..\\control_profile.json");
         Console.WriteLine("  reset --display 1");
         Console.WriteLine();
         Console.WriteLine("Neutral values:");
@@ -241,4 +386,7 @@ public class ControlProfile
 
     [JsonPropertyName("reset")]
     public bool Reset { get; set; } = false;
+
+    [JsonPropertyName("heartbeat")]
+    public string? Heartbeat { get; set; }
 }
