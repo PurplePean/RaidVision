@@ -1,7 +1,8 @@
 {
   "display_index": 1,
-  "brightness": 0.70,
-  "contrast": 0.60,
-  "gamma": 1.50,
-  "reset": false
+  "brightness": 0.6,
+  "contrast": 0.53,
+  "gamma": 1.35,
+  "reset": false,
+  "heartbeat": "2026-04-26T20:39:54.039488+00:00"
 }
