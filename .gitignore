@@ -29,3 +29,5 @@ control_tests/
 
 # Archives
 *.zip
+debug_views/
+lut_previews/
