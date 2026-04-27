@@ -32,6 +32,7 @@ class Program
                 "list" => ListDisplays(),
                 "apply" => Apply(args),
                 "apply-profile" => ApplyProfile(args),
+                "custom-lut" => ApplyCustomLut(args),
                 "watch" => Watch(args),
                 "reset" => Reset(args),
                 _ => UnknownCommand(command)
@@ -67,6 +68,127 @@ class Program
         double gamma = GetDoubleArg(args, "--gamma", NeutralGamma);
 
         return ApplyValues(displayIndex, brightness, contrast, gamma);
+    }
+
+    private static int ApplyCustomLut(string[] args)
+    {
+        int displayIndex = GetIntArg(args, "--display", 1);
+
+        double shadowLift = GetDoubleArg(args, "--shadow-lift", 0.35);
+        double midtoneBoost = GetDoubleArg(args, "--midtone", 0.20);
+        double highlightProtect = GetDoubleArg(args, "--highlight-protect", 0.40);
+
+        shadowLift = Clamp(shadowLift, 0.0, 1.0);
+        midtoneBoost = Clamp(midtoneBoost, 0.0, 1.0);
+        highlightProtect = Clamp(highlightProtect, 0.0, 1.0);
+
+        Display target = GetDisplay(displayIndex);
+
+        DisplayGammaRamp ramp = BuildVisibilityLut(
+            shadowLift,
+            midtoneBoost,
+            highlightProtect
+        );
+
+        target.GammaRamp = ramp;
+
+        Console.WriteLine("Applied RaidVision custom LUT");
+        Console.WriteLine($"Display: {displayIndex} | {target.DisplayName}");
+        Console.WriteLine($"Shadow Lift: {shadowLift:F3}");
+        Console.WriteLine($"Midtone Boost: {midtoneBoost:F3}");
+        Console.WriteLine($"Highlight Protect: {highlightProtect:F3}");
+
+        return 0;
+    }
+
+    private static DisplayGammaRamp BuildVisibilityLut(
+        double shadowLift,
+        double midtoneBoost,
+        double highlightProtect
+    )
+    {
+        ushort[] red = new ushort[256];
+        ushort[] green = new ushort[256];
+        ushort[] blue = new ushort[256];
+
+        for (int i = 0; i < 256; i++)
+        {
+            double x = i / 255.0;
+
+            double y = ApplyVisibilityCurve(
+                x,
+                shadowLift,
+                midtoneBoost,
+                highlightProtect
+            );
+
+            double redY = y;
+            double greenY = ApplyColorBias(y, x, greenBoost: 0.025, blueBoost: 0.0);
+            double blueY = ApplyColorBias(y, x, greenBoost: 0.0, blueBoost: 0.035);
+
+            red[i] = ToUShort(redY);
+            green[i] = ToUShort(greenY);
+            blue[i] = ToUShort(blueY);
+        }
+
+        return new DisplayGammaRamp(red, green, blue);
+    }
+
+    private static double ApplyVisibilityCurve(
+        double x,
+        double shadowLift,
+        double midtoneBoost,
+        double highlightProtect
+    )
+    {
+        double y = x;
+
+        if (x < 0.35)
+        {
+            double t = x / 0.35;
+
+            double lifted = x + shadowLift * 0.35 * (1.0 - Math.Pow(t, 1.8));
+            y = Math.Max(y, lifted);
+        }
+
+        if (x >= 0.25 && x <= 0.75)
+        {
+            double centerDistance = Math.Abs(x - 0.5) / 0.25;
+            double midWeight = Clamp(1.0 - centerDistance, 0.0, 1.0);
+
+            y += midtoneBoost * 0.12 * midWeight;
+        }
+
+        if (x > 0.72)
+        {
+            double t = (x - 0.72) / 0.28;
+            double compression = highlightProtect * 0.18 * t * t;
+
+            y -= compression;
+        }
+
+        y = Clamp(y, 0.0, 1.0);
+
+        return y;
+    }
+
+    private static double ApplyColorBias(double y, double originalX, double greenBoost, double blueBoost)
+    {
+        if (originalX > 0.45)
+        {
+            return y;
+        }
+
+        double shadowWeight = Clamp((0.45 - originalX) / 0.45, 0.0, 1.0);
+        double boost = (greenBoost + blueBoost) * shadowWeight;
+
+        return Clamp(y + boost, 0.0, 1.0);
+    }
+
+    private static ushort ToUShort(double value)
+    {
+        value = Clamp(value, 0.0, 1.0);
+        return (ushort)Math.Round(value * 65535.0);
     }
 
     private static int ApplyProfile(string[] args)
@@ -360,6 +482,7 @@ class Program
         Console.WriteLine("  list");
         Console.WriteLine("  apply --display 1 --brightness 0.60 --contrast 0.55 --gamma 1.35");
         Console.WriteLine("  apply-profile --path ..\\..\\control_profile.json");
+        Console.WriteLine("  custom-lut --display 1 --shadow-lift 0.35 --midtone 0.20 --highlight-protect 0.40");
         Console.WriteLine("  watch --path ..\\..\\control_profile.json");
         Console.WriteLine("  reset --display 1");
         Console.WriteLine();
