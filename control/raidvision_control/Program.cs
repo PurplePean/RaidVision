@@ -74,37 +74,73 @@ class Program
     {
         int displayIndex = GetIntArg(args, "--display", 1);
 
+        double blackPoint = GetDoubleArg(args, "--black-point", 0.02);
         double shadowLift = GetDoubleArg(args, "--shadow-lift", 0.35);
-        double midtoneBoost = GetDoubleArg(args, "--midtone", 0.20);
+        double shadowPivot = GetDoubleArg(args, "--shadow-pivot", 0.35);
+        double midtoneBoost = GetDoubleArg(args, "--midtone", 0.12);
+        double midtoneWidth = GetDoubleArg(args, "--midtone-width", 0.28);
+        double contrastStrength = GetDoubleArg(args, "--contrast", 0.12);
         double highlightProtect = GetDoubleArg(args, "--highlight-protect", 0.40);
+        double highlightPivot = GetDoubleArg(args, "--highlight-pivot", 0.72);
+        double greenBias = GetDoubleArg(args, "--green-bias", 0.025);
+        double blueBias = GetDoubleArg(args, "--blue-bias", 0.035);
 
+        blackPoint = Clamp(blackPoint, 0.0, 0.12);
         shadowLift = Clamp(shadowLift, 0.0, 1.0);
-        midtoneBoost = Clamp(midtoneBoost, 0.0, 1.0);
+        shadowPivot = Clamp(shadowPivot, 0.18, 0.55);
+        midtoneBoost = Clamp(midtoneBoost, 0.0, 0.50);
+        midtoneWidth = Clamp(midtoneWidth, 0.12, 0.50);
+        contrastStrength = Clamp(contrastStrength, 0.0, 0.50);
         highlightProtect = Clamp(highlightProtect, 0.0, 1.0);
+        highlightPivot = Clamp(highlightPivot, 0.55, 0.90);
+        greenBias = Clamp(greenBias, 0.0, 0.08);
+        blueBias = Clamp(blueBias, 0.0, 0.08);
 
         Display target = GetDisplay(displayIndex);
 
         DisplayGammaRamp ramp = BuildVisibilityLut(
+            blackPoint,
             shadowLift,
+            shadowPivot,
             midtoneBoost,
-            highlightProtect
+            midtoneWidth,
+            contrastStrength,
+            highlightProtect,
+            highlightPivot,
+            greenBias,
+            blueBias
         );
 
         target.GammaRamp = ramp;
 
         Console.WriteLine("Applied RaidVision custom LUT");
         Console.WriteLine($"Display: {displayIndex} | {target.DisplayName}");
+        Console.WriteLine($"Black Point: {blackPoint:F3}");
         Console.WriteLine($"Shadow Lift: {shadowLift:F3}");
+        Console.WriteLine($"Shadow Pivot: {shadowPivot:F3}");
         Console.WriteLine($"Midtone Boost: {midtoneBoost:F3}");
+        Console.WriteLine($"Midtone Width: {midtoneWidth:F3}");
+        Console.WriteLine($"Contrast: {contrastStrength:F3}");
         Console.WriteLine($"Highlight Protect: {highlightProtect:F3}");
+        Console.WriteLine($"Highlight Pivot: {highlightPivot:F3}");
+        Console.WriteLine($"Green Bias: {greenBias:F3}");
+        Console.WriteLine($"Blue Bias: {blueBias:F3}");
 
         return 0;
     }
 
+
     private static DisplayGammaRamp BuildVisibilityLut(
+        double blackPoint,
         double shadowLift,
+        double shadowPivot,
         double midtoneBoost,
-        double highlightProtect
+        double midtoneWidth,
+        double contrastStrength,
+        double highlightProtect,
+        double highlightPivot,
+        double greenBias,
+        double blueBias
     )
     {
         ushort[] red = new ushort[256];
@@ -117,14 +153,19 @@ class Program
 
             double y = ApplyVisibilityCurve(
                 x,
+                blackPoint,
                 shadowLift,
+                shadowPivot,
                 midtoneBoost,
-                highlightProtect
+                midtoneWidth,
+                contrastStrength,
+                highlightProtect,
+                highlightPivot
             );
 
             double redY = y;
-            double greenY = ApplyColorBias(y, x, greenBoost: 0.025, blueBoost: 0.0);
-            double blueY = ApplyColorBias(y, x, greenBoost: 0.0, blueBoost: 0.035);
+            double greenY = ApplyColorBias(y, x, greenBias, 0.0);
+            double blueY = ApplyColorBias(y, x, 0.0, blueBias);
 
             red[i] = ToUShort(redY);
             green[i] = ToUShort(greenY);
@@ -134,34 +175,56 @@ class Program
         return new DisplayGammaRamp(red, green, blue);
     }
 
+
     private static double ApplyVisibilityCurve(
         double x,
+        double blackPoint,
         double shadowLift,
+        double shadowPivot,
         double midtoneBoost,
-        double highlightProtect
+        double midtoneWidth,
+        double contrastStrength,
+        double highlightProtect,
+        double highlightPivot
     )
     {
         double y = x;
 
-        if (x < 0.35)
+        if (blackPoint > 0.0)
         {
-            double t = x / 0.35;
+            y = Math.Max(0.0, (y - blackPoint) / (1.0 - blackPoint));
+        }
 
-            double lifted = x + shadowLift * 0.35 * (1.0 - Math.Pow(t, 1.8));
+        if (x < shadowPivot)
+        {
+            double t = Clamp(x / shadowPivot, 0.0, 1.0);
+            double liftShape = 1.0 - Math.Pow(t, 1.85);
+            double lifted = y + shadowLift * shadowPivot * liftShape;
+
             y = Math.Max(y, lifted);
         }
 
-        if (x >= 0.25 && x <= 0.75)
+        if (contrastStrength > 0.0)
         {
-            double centerDistance = Math.Abs(x - 0.5) / 0.25;
+            double contrastCenter = 0.42;
+            double contrastWindow = 0.42;
+            double distance = Math.Abs(y - contrastCenter) / contrastWindow;
+            double weight = Clamp(1.0 - distance, 0.0, 1.0);
+
+            y = contrastCenter + (y - contrastCenter) * (1.0 + contrastStrength * weight);
+        }
+
+        if (midtoneBoost > 0.0)
+        {
+            double centerDistance = Math.Abs(y - 0.50) / midtoneWidth;
             double midWeight = Clamp(1.0 - centerDistance, 0.0, 1.0);
 
             y += midtoneBoost * 0.12 * midWeight;
         }
 
-        if (x > 0.72)
+        if (y > highlightPivot)
         {
-            double t = (x - 0.72) / 0.28;
+            double t = Clamp((y - highlightPivot) / (1.0 - highlightPivot), 0.0, 1.0);
             double compression = highlightProtect * 0.18 * t * t;
 
             y -= compression;
@@ -171,6 +234,7 @@ class Program
 
         return y;
     }
+
 
     private static double ApplyColorBias(double y, double originalX, double greenBoost, double blueBoost)
     {
@@ -184,6 +248,7 @@ class Program
 
         return Clamp(y + boost, 0.0, 1.0);
     }
+
 
     private static ushort ToUShort(double value)
     {
@@ -482,7 +547,7 @@ class Program
         Console.WriteLine("  list");
         Console.WriteLine("  apply --display 1 --brightness 0.60 --contrast 0.55 --gamma 1.35");
         Console.WriteLine("  apply-profile --path ..\\..\\control_profile.json");
-        Console.WriteLine("  custom-lut --display 1 --shadow-lift 0.35 --midtone 0.20 --highlight-protect 0.40");
+        Console.WriteLine("  custom-lut --display 1 --black-point 0.02 --shadow-lift 0.45 --shadow-pivot 0.35 --midtone 0.12 --midtone-width 0.28 --contrast 0.12 --highlight-protect 0.45 --highlight-pivot 0.72 --green-bias 0.025 --blue-bias 0.035");
         Console.WriteLine("  watch --path ..\\..\\control_profile.json");
         Console.WriteLine("  reset --display 1");
         Console.WriteLine();

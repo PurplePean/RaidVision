@@ -31,3 +31,4 @@ control_tests/
 *.zip
 debug_views/
 lut_previews/
+feedback_logs/

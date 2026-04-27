@@ -84,7 +84,7 @@ class RaidVisionGUI:
         self.night_vision_var = tk.StringVar(value="Off")
         self.thermal_var = tk.StringVar(value="Off")
 
-        self.live_preview_var = tk.BooleanVar(value=False)
+        self.live_preview_var = tk.BooleanVar(value=True)
         self.slider_debounce_job = None
         self.is_live_apply_running = False
         self.pending_live_apply = False
@@ -137,29 +137,23 @@ class RaidVisionGUI:
         """
         ttk.Label(parent, text="Workflow", font=("Segoe UI", 14, "bold")).pack(anchor="w")
 
-        ttk.Button(parent, text="Start Sample", command=self.start_sample).pack(fill="x", pady=5)
-        ttk.Button(parent, text="Stop Sample + Auto Analyze", command=self.stop_sample).pack(fill="x", pady=5)
-
-        ttk.Separator(parent).pack(fill="x", pady=10)
-
-        ttk.Button(parent, text="Analyze Latest", command=self.analyze_latest).pack(fill="x", pady=5)
-        ttk.Button(parent, text="Apply Recommended", command=self.apply_recommended).pack(fill="x", pady=5)
-        ttk.Button(parent, text="Apply Current Sliders", command=self.apply_manual_sliders).pack(fill="x", pady=5)
+        ttk.Button(parent, text="Start RaidVision", command=self.start_sample).pack(fill="x", pady=5)
         ttk.Button(parent, text="Reset Display", command=self.reset).pack(fill="x", pady=5)
+        ttk.Button(parent, text="Save Preferred", command=self.save_feedback).pack(fill="x", pady=5)
 
         ttk.Separator(parent).pack(fill="x", pady=10)
 
+        ttk.Label(parent, text="Advanced", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Button(parent, text="Analyze Latest", command=self.analyze_latest).pack(fill="x", pady=5)
         ttk.Button(parent, text="Open Debug Folder", command=self.open_debug_folder).pack(fill="x", pady=5)
-        ttk.Button(parent, text="Save As Preferred", command=self.save_feedback).pack(fill="x", pady=5)
 
         ttk.Separator(parent).pack(fill="x", pady=10)
 
         ttk.Label(parent, text="Hotkey plan", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        ttk.Label(parent, text="F8  Start Sample").pack(anchor="w")
-        ttk.Label(parent, text="F9  Stop + Analyze").pack(anchor="w")
-        ttk.Label(parent, text="F10 Apply Recommended").pack(anchor="w")
+        ttk.Label(parent, text="F8  Start RaidVision").pack(anchor="w")
         ttk.Label(parent, text="F11 Reset").pack(anchor="w")
-        ttk.Label(parent, text="F12 Save Feedback").pack(anchor="w")
+        ttk.Label(parent, text="F12 Save Preferred").pack(anchor="w")
+
 
     def build_sliders(self, parent: ttk.Frame) -> None:
         """
@@ -178,12 +172,6 @@ class RaidVisionGUI:
         ttk.Separator(parent).pack(fill="x", pady=10)
 
         ttk.Label(parent, text="Manual Custom LUT Sliders", font=("Segoe UI", 14, "bold")).pack(anchor="w")
-
-        ttk.Checkbutton(
-            parent,
-            text="Live Preview Sliders",
-            variable=self.live_preview_var,
-        ).pack(anchor="w", pady=(4, 10))
 
         self.add_slider(parent, "Shadow Lift", self.shadow_lift_var, 0.0, 1.0)
         self.add_slider(parent, "Midtone", self.midtone_var, 0.0, 0.5)
@@ -345,7 +333,7 @@ class RaidVisionGUI:
         )
         self.capture_thread.start()
 
-        self.set_status("Sampling started. Stop manually or wait for auto finish.")
+        self.set_status("Sampling started. Auto analyze and auto apply will run when complete.")
 
     def stop_sample(self) -> None:
         """
@@ -506,7 +494,8 @@ class RaidVisionGUI:
             self.current_recommendation = recommendation
 
             self.update_recommendation_ui(report)
-            self.set_status(f"Analysis complete: {frame_folder.name}")
+            self.set_status(f"Analysis complete: {frame_folder.name}. Auto applying recommendation.")
+            self.apply_recommended()
 
         except Exception as error:
             messagebox.showerror("Analysis Error", str(error))
@@ -546,8 +535,7 @@ class RaidVisionGUI:
         """
         value_label.config(text=f"{variable.get():.3f}")
 
-        if self.live_preview_var.get():
-            self.schedule_live_preview_apply()
+        self.schedule_live_preview_apply()
 
     def schedule_live_preview_apply(self) -> None:
         """
@@ -563,9 +551,6 @@ class RaidVisionGUI:
         Apply the current slider values automatically when live preview is enabled.
         """
         self.slider_debounce_job = None
-
-        if not self.live_preview_var.get():
-            return
 
         if self.is_live_apply_running:
             self.pending_live_apply = True
@@ -609,7 +594,7 @@ class RaidVisionGUI:
         finally:
             self.is_live_apply_running = False
 
-            if self.pending_live_apply and self.live_preview_var.get():
+            if self.pending_live_apply:
                 self.pending_live_apply = False
                 self.root.after(50, self.apply_live_preview)
 
