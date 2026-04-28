@@ -4,7 +4,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import mss
@@ -119,12 +119,21 @@ def save_frame(frame: np.ndarray, folder: Path, index: int, status: str) -> Path
 # Public Capture Function
 # ============================================================
 
-def capture_screen_sample() -> dict[str, Any]:
+def capture_screen_sample(
+    duration_seconds: float = SAMPLE_DURATION_SECONDS,
+    interval_seconds: float = SAMPLE_INTERVAL_SECONDS,
+    mss_monitor_index: int = MSS_MONITOR_INDEX,
+    stop_check: Callable[[], bool] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """
     Capture a short screen sample from the configured monitor.
 
-    This function only captures and saves frames.
-    It does not make visibility recommendations.
+    This is the single source of truth for RaidVision sampling.
+
+    Optional hooks:
+    - stop_check: returns True when capture should stop early
+    - progress_callback: receives per-frame progress dictionaries
     """
     frame_folder = create_raid_folder()
 
@@ -135,18 +144,28 @@ def capture_screen_sample() -> dict[str, Any]:
     rejection_counts: dict[str, int] = {}
 
     with mss.MSS() as sct:
-        monitor = sct.monitors[MSS_MONITOR_INDEX]
+        if mss_monitor_index >= len(sct.monitors):
+            raise ValueError(
+                f"MSS monitor index {mss_monitor_index} is invalid. "
+                f"Available monitor count: {len(sct.monitors) - 1}"
+            )
+
+        monitor = sct.monitors[mss_monitor_index]
         start = time.time()
         frame_index = 1
 
         print()
         print("RaidVision Capture")
-        print(f"Monitor index: {MSS_MONITOR_INDEX}")
-        print(f"Sample duration: {SAMPLE_DURATION_SECONDS} seconds")
+        print(f"Monitor index: {mss_monitor_index}")
+        print(f"Sample duration: {duration_seconds} seconds")
         print("Sampling now. Tab into Tarkov and hold the view steady.")
         print()
 
-        while time.time() - start < SAMPLE_DURATION_SECONDS:
+        while time.time() - start < duration_seconds:
+            if stop_check is not None and stop_check():
+                print("Capture stopped early.")
+                break
+
             frame = np.array(sct.grab(monitor))
             metrics = analyze_basic_frame(frame)
 
@@ -163,6 +182,19 @@ def capture_screen_sample() -> dict[str, Any]:
             captured_metrics.append(metrics)
             saved_frames.append(str(saved_path))
 
+            progress = {
+                "frame_index": frame_index,
+                "status": status,
+                "is_valid": is_valid,
+                "valid_count": valid_count,
+                "rejected_count": rejected_count,
+                "saved_path": str(saved_path),
+                "metrics": metrics,
+            }
+
+            if progress_callback is not None:
+                progress_callback(progress)
+
             print(
                 f"Frame:{frame_index:03} | "
                 f"{status} | "
@@ -174,7 +206,7 @@ def capture_screen_sample() -> dict[str, Any]:
             )
 
             frame_index += 1
-            time.sleep(SAMPLE_INTERVAL_SECONDS)
+            time.sleep(interval_seconds)
 
     result = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -185,9 +217,9 @@ def capture_screen_sample() -> dict[str, Any]:
         "rejected_frames": rejected_count,
         "rejection_counts": rejection_counts,
         "sample_config": {
-            "mss_monitor_index": MSS_MONITOR_INDEX,
-            "duration_seconds": SAMPLE_DURATION_SECONDS,
-            "interval_seconds": SAMPLE_INTERVAL_SECONDS,
+            "mss_monitor_index": mss_monitor_index,
+            "duration_seconds": duration_seconds,
+            "interval_seconds": interval_seconds,
             "frame_size": [FRAME_WIDTH, FRAME_HEIGHT],
         },
     }
@@ -204,3 +236,7 @@ def capture_screen_sample() -> dict[str, Any]:
     print(f"Saved capture metadata to: {metadata_path}")
 
     return result
+
+
+if __name__ == "__main__":
+    capture_screen_sample()

@@ -14,15 +14,7 @@ import cv2
 import mss
 import numpy as np
 
-from capture import (
-    MSS_MONITOR_INDEX,
-    SAMPLE_DURATION_SECONDS,
-    SAMPLE_INTERVAL_SECONDS,
-    analyze_basic_frame,
-    classify_capture_frame,
-    create_raid_folder,
-    save_frame,
-)
+from capture import capture_screen_sample
 from control_runner import apply_display_color_stack, reset_display
 from profile_writer import write_display_color_profile
 from visibility_engine import (
@@ -262,75 +254,48 @@ class RaidVisionGUI:
 
         self.stop_event.clear()
         self.is_sampling = True
-        self.current_frame_folder = create_raid_folder()
+        self.current_frame_folder = None
 
         self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
         self.capture_thread.start()
 
         self.set_status("Sampling started. Auto analyze and auto apply will run when complete.")
 
+
     def capture_loop(self) -> None:
-        assert self.current_frame_folder is not None
-
-        saved_frames: list[str] = []
-        valid_count = 0
-        rejected_count = 0
-        rejection_counts: dict[str, int] = {}
-
+        """
+        Run shared capture logic from capture.py, then analyze the resulting folder.
+        """
         try:
-            with mss.MSS() as sct:
-                monitor = sct.monitors[MSS_MONITOR_INDEX]
-                start = time.time()
-                frame_index = 1
+            capture_result = capture_screen_sample(
+                stop_check=self.stop_event.is_set,
+                progress_callback=self.on_capture_progress,
+            )
 
-                while not self.stop_event.is_set():
-                    if time.time() - start >= SAMPLE_DURATION_SECONDS:
-                        break
-
-                    frame = np.array(sct.grab(monitor))
-                    metrics = analyze_basic_frame(frame)
-                    is_valid, status = classify_capture_frame(metrics)
-
-                    if is_valid:
-                        valid_count += 1
-                    else:
-                        rejected_count += 1
-                        rejection_counts[status] = rejection_counts.get(status, 0) + 1
-
-                    saved_path = save_frame(frame, self.current_frame_folder, frame_index, status)
-                    saved_frames.append(str(saved_path))
-
-                    self.set_status(
-                        f"Sampling frame {frame_index:03} | {status} | "
-                        f"valid {valid_count} | rejected {rejected_count}"
-                    )
-
-                    frame_index += 1
-                    time.sleep(SAMPLE_INTERVAL_SECONDS)
-
-            capture_metadata = {
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "frame_folder": str(self.current_frame_folder),
-                "saved_frames": saved_frames,
-                "captured_frames": len(saved_frames),
-                "valid_frames": valid_count,
-                "rejected_frames": rejected_count,
-                "rejection_counts": rejection_counts,
-                "sample_config": {
-                    "mss_monitor_index": MSS_MONITOR_INDEX,
-                    "duration_seconds": SAMPLE_DURATION_SECONDS,
-                    "interval_seconds": SAMPLE_INTERVAL_SECONDS,
-                },
-            }
-
-            self.save_json(self.current_frame_folder / "capture_metadata.json", capture_metadata)
+            self.current_frame_folder = Path(capture_result["frame_folder"])
 
         except Exception as error:
             self.root.after(0, lambda: messagebox.showerror("Capture Error", str(error)))
-
-        finally:
             self.is_sampling = False
-            self.root.after(0, self.analyze_current_folder)
+            return
+
+        self.is_sampling = False
+        self.root.after(0, self.analyze_current_folder)
+
+    def on_capture_progress(self, progress: dict[str, Any]) -> None:
+        """
+        Receive per-frame progress updates from capture.py.
+        """
+        frame_index = progress["frame_index"]
+        status = progress["status"]
+        valid_count = progress["valid_count"]
+        rejected_count = progress["rejected_count"]
+
+        self.set_status(
+            f"Sampling frame {frame_index:03} | {status} | "
+            f"valid {valid_count} | rejected {rejected_count}"
+        )
+
 
     def analyze_current_folder(self) -> None:
         if self.current_frame_folder is None:
