@@ -410,9 +410,9 @@ class RaidVisionGUI:
         backlight = float(pressures.get("backlight_pressure", 0.0))
         night = float(pressures.get("night_pressure", 0.0))
 
-        brightness = clamp(0.50 + shadow * 0.06 + night * 0.04 + backlight * 0.02 - highlight * 0.04, 0.35, 0.75)
-        contrast = clamp(0.50 + low_contrast * 0.14 + shadow * 0.04 + deep_shadow * 0.03 - highlight * 0.03, 0.35, 0.85)
-        gamma = clamp(1.00 + shadow * 0.22 + deep_shadow * 0.12 + night * 0.16 - highlight * 0.08, 0.70, 1.80)
+        brightness = clamp(0.50 + shadow * 0.10 + night * 0.08 + backlight * 0.04 - highlight * 0.06, 0.00, 1.00)
+        contrast = clamp(0.50 + low_contrast * 0.22 + shadow * 0.08 + deep_shadow * 0.06 - highlight * 0.04, 0.00, 1.00)
+        gamma = clamp(1.00 + shadow * 0.45 + deep_shadow * 0.25 + night * 0.30 - highlight * 0.12, 0.40, 2.80)
         vibrance = clamp(50.0 + shadow * 8.0 + low_contrast * 8.0 - highlight * 4.0, 0.0, 100.0)
 
         reasoning = []

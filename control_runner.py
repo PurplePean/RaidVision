@@ -37,12 +37,39 @@ def run_control_command(args: list[str]) -> int:
     return completed.returncode
 
 
+def apply_display_color_stack(
+    profile: dict[str, Any],
+    display_index: int,
+) -> int:
+    """
+    Apply brightness, contrast, and gamma through the C# controller.
+
+    Vibrance is currently logged only and is not applied here yet.
+    """
+    return run_control_command(
+        [
+            "apply",
+            "--display",
+            str(display_index),
+            "--brightness",
+            str(profile["brightness"]),
+            "--contrast",
+            str(profile["contrast"]),
+            "--gamma",
+            str(profile["gamma"]),
+        ]
+    )
+
+
 def apply_custom_lut(
     recommendation: dict[str, Any],
     display_index: int,
 ) -> int:
     """
-    Apply a custom LUT profile through the C# display controller.
+    Legacy Custom LUT apply path.
+
+    Kept for branch compatibility, but this is not the primary path on
+    feature/display-color-stack.
     """
     return run_control_command(
         [
