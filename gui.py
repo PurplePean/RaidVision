@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -23,8 +23,8 @@ from capture import (
     create_raid_folder,
     save_frame,
 )
-from control_runner import apply_custom_lut, reset_display
-from profile_writer import write_custom_lut_profile
+from control_runner import apply_display_color_stack, reset_display
+from profile_writer import write_display_color_profile
 from visibility_engine import (
     analyze_frames,
     find_frame_files,
@@ -39,23 +39,21 @@ DEBUG_ROOT = Path("debug_views")
 FEEDBACK_ROOT = Path("feedback_logs")
 
 
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
 class RaidVisionGUI:
     """
-    RaidVision local control panel.
+    RaidVision Display Color Stack GUI.
 
-    Responsibilities:
-    - Start and stop frame sampling
-    - Auto analyze after stopping
-    - Show recommended custom LUT values
-    - Let user tweak sliders
-    - Apply recommended or manual values
-    - Reset display
-    - Save feedback logs
+    Brightness, contrast, and gamma are applied through the C# controller.
+    Vibrance is logged only until NVIDIA vibrance control is wired.
     """
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("RaidVision Control Panel")
+        self.root.title("RaidVision Display Color Stack")
         self.root.geometry("980x720")
 
         self.display_index = DEFAULT_DISPLAY_INDEX
@@ -66,17 +64,18 @@ class RaidVisionGUI:
 
         self.current_frame_folder: Path | None = None
         self.current_report: dict[str, Any] | None = None
-        self.current_recommendation: dict[str, Any] | None = None
+        self.engine_recommendation: dict[str, Any] | None = None
         self.current_debug_folder: Path | None = None
 
-        self.shadow_lift_var = tk.DoubleVar(value=0.35)
-        self.midtone_var = tk.DoubleVar(value=0.20)
-        self.highlight_protect_var = tk.DoubleVar(value=0.40)
+        self.brightness_var = tk.DoubleVar(value=0.50)
+        self.contrast_var = tk.DoubleVar(value=0.50)
+        self.gamma_var = tk.DoubleVar(value=1.00)
+        self.vibrance_var = tk.DoubleVar(value=50.0)
 
-        self.rating_var = tk.StringVar(value="")
-        self.washed_out_var = tk.BooleanVar(value=False)
-        self.too_dark_var = tk.BooleanVar(value=False)
-        self.too_bright_var = tk.BooleanVar(value=False)
+        self.slider_debounce_job = None
+        self.is_live_apply_running = False
+        self.pending_live_apply = False
+        self.suppress_slider_apply = False
 
         self.map_var = tk.StringVar(value="Unknown")
         self.time_of_day_var = tk.StringVar(value="Unknown")
@@ -84,26 +83,18 @@ class RaidVisionGUI:
         self.night_vision_var = tk.StringVar(value="Off")
         self.thermal_var = tk.StringVar(value="Off")
 
-        self.live_preview_var = tk.BooleanVar(value=True)
-        self.slider_debounce_job = None
-        self.is_live_apply_running = False
-        self.pending_live_apply = False
+        self.rating_var = tk.StringVar(value="")
+        self.washed_out_var = tk.BooleanVar(value=False)
+        self.too_dark_var = tk.BooleanVar(value=False)
+        self.too_bright_var = tk.BooleanVar(value=False)
 
         self.status_var = tk.StringVar(value="Ready")
         self.recommendation_text = tk.StringVar(value="No recommendation yet.")
-
         self.pressure_labels: dict[str, tk.StringVar] = {}
 
         self.build_ui()
 
-    # ============================================================
-    # UI Layout
-    # ============================================================
-
     def build_ui(self) -> None:
-        """
-        Build the main GUI layout.
-        """
         self.root.columnconfigure(0, weight=1)
         self.root.columnconfigure(1, weight=2)
         self.root.columnconfigure(2, weight=1)
@@ -119,8 +110,8 @@ class RaidVisionGUI:
 
         self.build_buttons(left)
         self.build_sliders(middle)
-        self.build_pressure_panel(right)
         self.build_feedback_panel(middle)
+        self.build_pressure_panel(right)
 
         status_bar = ttk.Label(
             self.root,
@@ -132,9 +123,6 @@ class RaidVisionGUI:
         status_bar.grid(row=1, column=0, columnspan=3, sticky="ew")
 
     def build_buttons(self, parent: ttk.Frame) -> None:
-        """
-        Build left side workflow buttons.
-        """
         ttk.Label(parent, text="Workflow", font=("Segoe UI", 14, "bold")).pack(anchor="w")
 
         ttk.Button(parent, text="Start RaidVision", command=self.start_sample).pack(fill="x", pady=5)
@@ -149,33 +137,27 @@ class RaidVisionGUI:
 
         ttk.Separator(parent).pack(fill="x", pady=10)
 
-        ttk.Label(parent, text="Hotkey plan", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        ttk.Label(parent, text="F8  Start RaidVision").pack(anchor="w")
-        ttk.Label(parent, text="F11 Reset").pack(anchor="w")
-        ttk.Label(parent, text="F12 Save Preferred").pack(anchor="w")
-
+        ttk.Label(parent, text="Behavior", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(parent, text="Start samples, analyzes, and auto applies.").pack(anchor="w")
+        ttk.Label(parent, text="Sliders live apply after a short pause.").pack(anchor="w")
+        ttk.Label(parent, text="Vibrance is logged only for now.").pack(anchor="w")
 
     def build_sliders(self, parent: ttk.Frame) -> None:
-        """
-        Build middle panel recommendation and manual LUT sliders.
-        """
-        ttk.Label(parent, text="Recommended LUT", font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        ttk.Label(parent, text="Display Color Stack", font=("Segoe UI", 14, "bold")).pack(anchor="w")
 
-        recommendation_label = ttk.Label(
+        ttk.Label(
             parent,
             textvariable=self.recommendation_text,
             justify="left",
             padding=8,
-        )
-        recommendation_label.pack(fill="x", pady=6)
+        ).pack(fill="x", pady=6)
 
         ttk.Separator(parent).pack(fill="x", pady=10)
 
-        ttk.Label(parent, text="Manual Custom LUT Sliders", font=("Segoe UI", 14, "bold")).pack(anchor="w")
-
-        self.add_slider(parent, "Shadow Lift", self.shadow_lift_var, 0.0, 1.0)
-        self.add_slider(parent, "Midtone", self.midtone_var, 0.0, 0.5)
-        self.add_slider(parent, "Highlight Protect", self.highlight_protect_var, 0.0, 1.0)
+        self.add_slider(parent, "Brightness", self.brightness_var, 0.00, 1.00)
+        self.add_slider(parent, "Contrast", self.contrast_var, 0.00, 1.00)
+        self.add_slider(parent, "Gamma", self.gamma_var, 0.40, 2.80)
+        self.add_slider(parent, "Vibrance, logged only", self.vibrance_var, 0.0, 100.0)
 
     def add_slider(
         self,
@@ -185,9 +167,6 @@ class RaidVisionGUI:
         minimum: float,
         maximum: float,
     ) -> None:
-        """
-        Add a labeled slider with numeric value.
-        """
         frame = ttk.Frame(parent)
         frame.pack(fill="x", pady=8)
 
@@ -208,31 +187,7 @@ class RaidVisionGUI:
 
         value_label.config(text=f"{variable.get():.3f}")
 
-    def build_pressure_panel(self, parent: ttk.Frame) -> None:
-        """
-        Build right side pressure readout.
-        """
-        ttk.Label(parent, text="Pressure Readout", font=("Segoe UI", 14, "bold")).pack(anchor="w")
-
-        pressure_names = [
-            "shadow_pressure",
-            "deep_shadow_pressure",
-            "midtone_pressure",
-            "highlight_pressure",
-            "low_contrast_pressure",
-            "backlight_pressure",
-            "night_pressure",
-        ]
-
-        for name in pressure_names:
-            value_var = tk.StringVar(value=f"{name}: --")
-            self.pressure_labels[name] = value_var
-            ttk.Label(parent, textvariable=value_var).pack(anchor="w", pady=3)
-
     def build_feedback_panel(self, parent: ttk.Frame) -> None:
-        """
-        Build feedback inputs used for tuning logs.
-        """
         ttk.Separator(parent).pack(fill="x", pady=16)
 
         ttk.Label(parent, text="Scene Context", font=("Segoe UI", 14, "bold")).pack(anchor="w")
@@ -240,58 +195,15 @@ class RaidVisionGUI:
         context_grid = ttk.Frame(parent)
         context_grid.pack(fill="x", pady=6)
 
-        ttk.Label(context_grid, text="Map:").grid(row=0, column=0, sticky="w", pady=3)
-        ttk.Combobox(
-            context_grid,
-            textvariable=self.map_var,
-            values=[
-                "Unknown",
-                "Customs",
-                "Woods",
-                "Shoreline",
-                "Interchange",
-                "Reserve",
-                "Lighthouse",
-                "Streets",
-                "Ground Zero",
-                "Factory",
-                "Labs",
-                "Other",
-            ],
-            width=18,
-        ).grid(row=0, column=1, sticky="w", pady=3)
+        self.add_combo(context_grid, "Map:", self.map_var, [
+            "Unknown", "Customs", "Woods", "Shoreline", "Interchange", "Reserve",
+            "Lighthouse", "Streets", "Ground Zero", "Factory", "Labs", "Other",
+        ], 0)
 
-        ttk.Label(context_grid, text="Time:").grid(row=1, column=0, sticky="w", pady=3)
-        ttk.Combobox(
-            context_grid,
-            textvariable=self.time_of_day_var,
-            values=["Unknown", "Day", "Dusk", "Night"],
-            width=18,
-        ).grid(row=1, column=1, sticky="w", pady=3)
-
-        ttk.Label(context_grid, text="Weather:").grid(row=2, column=0, sticky="w", pady=3)
-        ttk.Combobox(
-            context_grid,
-            textvariable=self.weather_var,
-            values=["Unknown", "Clear", "Overcast", "Rain", "Fog", "Snow"],
-            width=18,
-        ).grid(row=2, column=1, sticky="w", pady=3)
-
-        ttk.Label(context_grid, text="Night Vision:").grid(row=3, column=0, sticky="w", pady=3)
-        ttk.Combobox(
-            context_grid,
-            textvariable=self.night_vision_var,
-            values=["Off", "On"],
-            width=18,
-        ).grid(row=3, column=1, sticky="w", pady=3)
-
-        ttk.Label(context_grid, text="Thermal:").grid(row=4, column=0, sticky="w", pady=3)
-        ttk.Combobox(
-            context_grid,
-            textvariable=self.thermal_var,
-            values=["Off", "On"],
-            width=18,
-        ).grid(row=4, column=1, sticky="w", pady=3)
+        self.add_combo(context_grid, "Time:", self.time_of_day_var, ["Unknown", "Day", "Dusk", "Night"], 1)
+        self.add_combo(context_grid, "Weather:", self.weather_var, ["Unknown", "Clear", "Overcast", "Rain", "Fog", "Snow"], 2)
+        self.add_combo(context_grid, "Night Vision:", self.night_vision_var, ["Off", "On"], 3)
+        self.add_combo(context_grid, "Thermal:", self.thermal_var, ["Off", "On"], 4)
 
         ttk.Separator(parent).pack(fill="x", pady=12)
 
@@ -311,14 +223,39 @@ class RaidVisionGUI:
         self.notes_box = tk.Text(parent, height=5, wrap="word")
         self.notes_box.pack(fill="both", expand=True)
 
-    # ============================================================
-    # Capture Workflow
-    # ============================================================
+    def add_combo(
+        self,
+        parent: ttk.Frame,
+        label: str,
+        variable: tk.StringVar,
+        values: list[str],
+        row: int,
+    ) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        ttk.Combobox(
+            parent,
+            textvariable=variable,
+            values=values,
+            width=18,
+        ).grid(row=row, column=1, sticky="w", pady=3)
+
+    def build_pressure_panel(self, parent: ttk.Frame) -> None:
+        ttk.Label(parent, text="Pressure Readout", font=("Segoe UI", 14, "bold")).pack(anchor="w")
+
+        for name in [
+            "shadow_pressure",
+            "deep_shadow_pressure",
+            "midtone_pressure",
+            "highlight_pressure",
+            "low_contrast_pressure",
+            "backlight_pressure",
+            "night_pressure",
+        ]:
+            value_var = tk.StringVar(value=f"{name}: --")
+            self.pressure_labels[name] = value_var
+            ttk.Label(parent, textvariable=value_var).pack(anchor="w", pady=3)
 
     def start_sample(self) -> None:
-        """
-        Start a background sample capture.
-        """
         if self.is_sampling:
             self.set_status("Already sampling.")
             return
@@ -327,29 +264,12 @@ class RaidVisionGUI:
         self.is_sampling = True
         self.current_frame_folder = create_raid_folder()
 
-        self.capture_thread = threading.Thread(
-            target=self.capture_loop,
-            daemon=True,
-        )
+        self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
         self.capture_thread.start()
 
         self.set_status("Sampling started. Auto analyze and auto apply will run when complete.")
 
-    def stop_sample(self) -> None:
-        """
-        Stop capture and trigger analysis.
-        """
-        if not self.is_sampling:
-            self.set_status("Not currently sampling.")
-            return
-
-        self.stop_event.set()
-        self.set_status("Stopping sample. Analysis will run automatically.")
-
     def capture_loop(self) -> None:
-        """
-        Capture frames until stopped or sample duration ends.
-        """
         assert self.current_frame_folder is not None
 
         saved_frames: list[str] = []
@@ -377,13 +297,7 @@ class RaidVisionGUI:
                         rejected_count += 1
                         rejection_counts[status] = rejection_counts.get(status, 0) + 1
 
-                    saved_path = save_frame(
-                        frame=frame,
-                        folder=self.current_frame_folder,
-                        index=frame_index,
-                        status=status,
-                    )
-
+                    saved_path = save_frame(frame, self.current_frame_folder, frame_index, status)
                     saved_frames.append(str(saved_path))
 
                     self.set_status(
@@ -418,14 +332,7 @@ class RaidVisionGUI:
             self.is_sampling = False
             self.root.after(0, self.analyze_current_folder)
 
-    # ============================================================
-    # Analysis
-    # ============================================================
-
     def analyze_current_folder(self) -> None:
-        """
-        Analyze the current frame folder.
-        """
         if self.current_frame_folder is None:
             self.set_status("No current frame folder to analyze.")
             return
@@ -433,9 +340,6 @@ class RaidVisionGUI:
         self.analyze_folder(self.current_frame_folder)
 
     def analyze_latest(self) -> None:
-        """
-        Analyze the latest saved frame folder.
-        """
         latest = find_latest_frame_folder()
 
         if latest is None:
@@ -446,9 +350,6 @@ class RaidVisionGUI:
         self.analyze_folder(latest)
 
     def analyze_folder(self, frame_folder: Path) -> None:
-        """
-        Run the visibility engine against a folder of frames.
-        """
         try:
             frame_paths = find_frame_files(frame_folder)
             valid_paths = [path for path in frame_paths if "valid" in path.stem.lower()]
@@ -465,16 +366,14 @@ class RaidVisionGUI:
                 return
 
             report = analyze_frames(frames)
-            recommendation = report["lut_recommendation"]
+            recommendation = self.build_display_recommendation(report)
 
-            profile = write_custom_lut_profile(
-                recommendation=recommendation,
-                display_index=self.display_index,
-            )
+            control_profile = write_display_color_profile(recommendation, self.display_index)
 
             report["frame_folder"] = str(frame_folder)
             report["frame_files_used"] = [str(path) for path in selected_paths]
-            report["control_profile"] = profile
+            report["display_color_recommendation"] = recommendation
+            report["control_profile"] = control_profile
 
             self.save_json(frame_folder / "visibility_report.json", report)
 
@@ -491,106 +390,112 @@ class RaidVisionGUI:
                 save_zone_overlay(frame, debug_folder / f"{index:03}_{path.stem}_zones.jpg")
 
             self.current_report = report
-            self.current_recommendation = recommendation
+            self.engine_recommendation = recommendation
 
-            self.update_recommendation_ui(report)
-            self.set_status(f"Analysis complete: {frame_folder.name}. Auto applying recommendation.")
-            self.apply_recommended()
+            self.update_recommendation_ui(report, recommendation)
+            self.set_status(f"Analysis complete: {frame_folder.name}. Auto applying display color stack.")
+
+            self.apply_profile(recommendation)
 
         except Exception as error:
             messagebox.showerror("Analysis Error", str(error))
 
-    def update_recommendation_ui(self, report: dict[str, Any]) -> None:
-        """
-        Update GUI labels and sliders from the latest recommendation.
-        """
-        recommendation = report["lut_recommendation"]
+    def build_display_recommendation(self, report: dict[str, Any]) -> dict[str, Any]:
+        pressures = report.get("average_pressures", {})
+
+        shadow = float(pressures.get("shadow_pressure", 0.0))
+        deep_shadow = float(pressures.get("deep_shadow_pressure", 0.0))
+        highlight = float(pressures.get("highlight_pressure", 0.0))
+        low_contrast = float(pressures.get("low_contrast_pressure", 0.0))
+        backlight = float(pressures.get("backlight_pressure", 0.0))
+        night = float(pressures.get("night_pressure", 0.0))
+
+        brightness = clamp(0.50 + shadow * 0.06 + night * 0.04 + backlight * 0.02 - highlight * 0.04, 0.35, 0.75)
+        contrast = clamp(0.50 + low_contrast * 0.14 + shadow * 0.04 + deep_shadow * 0.03 - highlight * 0.03, 0.35, 0.85)
+        gamma = clamp(1.00 + shadow * 0.22 + deep_shadow * 0.12 + night * 0.16 - highlight * 0.08, 0.70, 1.80)
+        vibrance = clamp(50.0 + shadow * 8.0 + low_contrast * 8.0 - highlight * 4.0, 0.0, 100.0)
+
+        reasoning = []
+
+        if shadow > 0.55:
+            reasoning.append("Shadow pressure is elevated.")
+        if low_contrast > 0.45:
+            reasoning.append("Low contrast pressure is elevated.")
+        if night > 0.45:
+            reasoning.append("Sample trends dark or night like.")
+        if highlight > 0.35:
+            reasoning.append("Highlight pressure is elevated.")
+        if not reasoning:
+            reasoning.append("Scene is close to baseline.")
+
+        return {
+            "mode": "display_color_stack",
+            "brightness": round(brightness, 3),
+            "contrast": round(contrast, 3),
+            "gamma": round(gamma, 3),
+            "vibrance": round(vibrance, 1),
+            "vibrance_apply_status": "logged_only",
+            "reasoning": reasoning,
+        }
+
+    def update_recommendation_ui(self, report: dict[str, Any], recommendation: dict[str, Any]) -> None:
         pressures = report["average_pressures"]
 
-        self.shadow_lift_var.set(float(recommendation["shadow_lift"]))
-        self.midtone_var.set(float(recommendation["midtone"]))
-        self.highlight_protect_var.set(float(recommendation["highlight_protect"]))
+        self.suppress_slider_apply = True
+        self.brightness_var.set(float(recommendation["brightness"]))
+        self.contrast_var.set(float(recommendation["contrast"]))
+        self.gamma_var.set(float(recommendation["gamma"]))
+        self.vibrance_var.set(float(recommendation["vibrance"]))
+        self.suppress_slider_apply = False
 
         self.recommendation_text.set(
-            f"Shadow Lift: {recommendation['shadow_lift']}\n"
-            f"Midtone: {recommendation['midtone']}\n"
-            f"Highlight Protect: {recommendation['highlight_protect']}"
+            f"Brightness: {recommendation['brightness']}\n"
+            f"Contrast: {recommendation['contrast']}\n"
+            f"Gamma: {recommendation['gamma']}\n"
+            f"Vibrance: {recommendation['vibrance']} logged only"
         )
 
         for name, label_var in self.pressure_labels.items():
             value = pressures.get(name, "--")
             label_var.set(f"{name}: {value}")
 
-    # ============================================================
-    # Live Slider Preview
-    # ============================================================
-
-    def on_slider_changed(
-        self,
-        value_label: ttk.Label,
-        variable: tk.DoubleVar,
-    ) -> None:
-        """
-        Update slider value text and optionally schedule a live preview apply.
-        """
+    def on_slider_changed(self, value_label: ttk.Label, variable: tk.DoubleVar) -> None:
         value_label.config(text=f"{variable.get():.3f}")
+
+        if self.suppress_slider_apply:
+            return
 
         self.schedule_live_preview_apply()
 
     def schedule_live_preview_apply(self) -> None:
-        """
-        Debounce live slider updates so we only apply after movement pauses briefly.
-        """
         if self.slider_debounce_job is not None:
             self.root.after_cancel(self.slider_debounce_job)
 
-        self.slider_debounce_job = self.root.after(350, self.apply_live_preview)
+        self.slider_debounce_job = self.root.after(450, self.apply_live_preview)
 
     def apply_live_preview(self) -> None:
-        """
-        Apply the current slider values automatically when live preview is enabled.
-        """
         self.slider_debounce_job = None
 
         if self.is_live_apply_running:
             self.pending_live_apply = True
             return
 
-        recommendation = self.get_slider_recommendation()
+        profile = self.get_slider_profile()
 
         thread = threading.Thread(
             target=self.live_apply_worker,
-            args=(recommendation,),
+            args=(profile,),
             daemon=True,
         )
         thread.start()
 
-    def live_apply_worker(self, recommendation: dict[str, Any]) -> None:
-        """
-        Run live preview apply outside the Tkinter UI thread.
-        """
+    def live_apply_worker(self, profile: dict[str, Any]) -> None:
         self.is_live_apply_running = True
 
         try:
-            write_custom_lut_profile(
-                recommendation=recommendation,
-                display_index=self.display_index,
-            )
-
-            self.set_status(
-                "Live applying sliders: "
-                f"{recommendation['shadow_lift']} / "
-                f"{recommendation['midtone']} / "
-                f"{recommendation['highlight_protect']}"
-            )
-
-            return_code = apply_custom_lut(recommendation, self.display_index)
-
-            self.set_status(f"Live preview applied. Exit code: {return_code}")
-
+            self.apply_profile(profile)
         except Exception as error:
-            self.root.after(0, lambda: messagebox.showerror("Live Preview Error", str(error)))
-
+            self.root.after(0, lambda: messagebox.showerror("Live Apply Error", str(error)))
         finally:
             self.is_live_apply_running = False
 
@@ -598,97 +503,58 @@ class RaidVisionGUI:
                 self.pending_live_apply = False
                 self.root.after(50, self.apply_live_preview)
 
-    # ============================================================
-    # Apply and Reset
-    # ============================================================
-
-    def get_slider_recommendation(self) -> dict[str, Any]:
-        """
-        Build a recommendation object from current slider values.
-        """
+    def get_slider_profile(self) -> dict[str, Any]:
         return {
-            "mode": "custom_lut",
-            "shadow_lift": round(float(self.shadow_lift_var.get()), 3),
-            "midtone": round(float(self.midtone_var.get()), 3),
-            "highlight_protect": round(float(self.highlight_protect_var.get()), 3),
-            "reasoning": ["Manual slider profile"],
+            "mode": "display_color_stack",
+            "brightness": round(float(self.brightness_var.get()), 3),
+            "contrast": round(float(self.contrast_var.get()), 3),
+            "gamma": round(float(self.gamma_var.get()), 3),
+            "vibrance": round(float(self.vibrance_var.get()), 1),
+            "vibrance_apply_status": "logged_only",
+            "reasoning": ["Manual display color stack sliders"],
         }
 
-    def apply_recommended(self) -> None:
-        """
-        Apply the latest recommended custom LUT.
-        """
-        if self.current_recommendation is None:
-            messagebox.showwarning("No Recommendation", "Run analysis first.")
-            return
+    def apply_profile(self, profile: dict[str, Any]) -> None:
+        write_display_color_profile(profile, self.display_index)
 
-        self.set_status("Applying recommended LUT.")
-        return_code = apply_custom_lut(self.current_recommendation, self.display_index)
-        self.set_status(f"Apply recommended complete. Exit code: {return_code}")
-
-    def apply_manual_sliders(self) -> None:
-        """
-        Apply the current manual slider values.
-        """
-        recommendation = self.get_slider_recommendation()
-
-        write_custom_lut_profile(
-            recommendation=recommendation,
-            display_index=self.display_index,
+        self.set_status(
+            "Applying display stack: "
+            f"B {profile['brightness']} | "
+            f"C {profile['contrast']} | "
+            f"G {profile['gamma']} | "
+            f"V {profile['vibrance']} logged"
         )
 
-        self.set_status("Applying manual slider LUT.")
-        return_code = apply_custom_lut(recommendation, self.display_index)
-        self.set_status(f"Apply manual complete. Exit code: {return_code}")
+        return_code = apply_display_color_stack(profile, self.display_index)
+        self.set_status(f"Display stack applied. Exit code: {return_code}")
 
     def reset(self) -> None:
-        """
-        Reset display to neutral.
-        """
         self.set_status("Resetting display.")
         return_code = reset_display(self.display_index)
         self.set_status(f"Reset complete. Exit code: {return_code}")
 
-    # ============================================================
-    # Feedback
-    # ============================================================
-
     def save_feedback(self) -> None:
-        """
-        Save the current slider values as the user's preferred profile.
-
-        This separates what RaidVision recommended from what the user actually preferred.
-        """
         FEEDBACK_ROOT.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = FEEDBACK_ROOT / f"feedback_{timestamp}.json"
 
-        engine_recommendation = self.current_recommendation
-        user_recommendation = self.get_slider_recommendation()
+        engine_recommendation = self.engine_recommendation
+        user_profile = self.get_slider_profile()
 
         recommendation_delta = None
-
         if engine_recommendation is not None:
             recommendation_delta = {
-                "shadow_lift": round(
-                    user_recommendation["shadow_lift"] - engine_recommendation["shadow_lift"],
-                    3,
-                ),
-                "midtone": round(
-                    user_recommendation["midtone"] - engine_recommendation["midtone"],
-                    3,
-                ),
-                "highlight_protect": round(
-                    user_recommendation["highlight_protect"] - engine_recommendation["highlight_protect"],
-                    3,
-                ),
+                "brightness": round(user_profile["brightness"] - engine_recommendation["brightness"], 3),
+                "contrast": round(user_profile["contrast"] - engine_recommendation["contrast"], 3),
+                "gamma": round(user_profile["gamma"] - engine_recommendation["gamma"], 3),
+                "vibrance": round(user_profile["vibrance"] - engine_recommendation["vibrance"], 1),
             }
 
         feedback = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "frame_folder": str(self.current_frame_folder) if self.current_frame_folder else None,
-
+            "active_control_stack": "display_color_stack",
             "scene_context": {
                 "map": self.map_var.get(),
                 "time_of_day": self.time_of_day_var.get(),
@@ -696,23 +562,12 @@ class RaidVisionGUI:
                 "night_vision": self.night_vision_var.get(),
                 "thermal": self.thermal_var.get(),
             },
-
-            "selected_profile_source": "user_recommendation",
+            "selected_profile_source": "user_preferred_display_color_stack",
             "user_marked_as_preferred": True,
-
             "engine_recommendation": engine_recommendation,
-            "user_recommendation": {
-                **user_recommendation,
-                "source": "manual_slider_tuning",
-            },
+            "user_preferred_profile": user_profile,
             "recommendation_delta": recommendation_delta,
-
-            "average_pressures": (
-                self.current_report.get("average_pressures")
-                if self.current_report
-                else None
-            ),
-
+            "average_pressures": self.current_report.get("average_pressures") if self.current_report else None,
             "rating": self.rating_var.get().strip(),
             "washed_out": self.washed_out_var.get(),
             "too_dark": self.too_dark_var.get(),
@@ -721,35 +576,20 @@ class RaidVisionGUI:
         }
 
         self.save_json(path, feedback)
-        self.set_status(f"Saved preferred profile: {path}")
-
-
-    # ============================================================
-    # Utilities
-    # ============================================================
+        self.set_status(f"Saved preferred display profile: {path}")
 
     def open_debug_folder(self) -> None:
-        """
-        Open the current debug folder in Windows Explorer.
-        """
         folder = self.current_debug_folder or DEBUG_ROOT
-
         folder.mkdir(parents=True, exist_ok=True)
         os.startfile(folder)
 
     def save_json(self, path: Path, data: dict[str, Any]) -> None:
-        """
-        Save JSON safely from the GUI.
-        """
         path.parent.mkdir(parents=True, exist_ok=True)
 
         with path.open("w", encoding="utf-8") as file:
             json.dump(data, file, indent=2)
 
     def set_status(self, message: str) -> None:
-        """
-        Update the status bar from any thread.
-        """
         self.root.after(0, lambda: self.status_var.set(message))
 
 
